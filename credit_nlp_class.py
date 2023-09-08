@@ -30,7 +30,6 @@ val_data, test_data = train_test_split(temp_data, test_size=0.5, random_state=0)
 # загрузим токенизатор и применим его
 tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-multilingual-cased")
 
-# Define a function to tokenize the text data
 def tokenize_text(text):
     return tokenizer(
         text,
@@ -40,7 +39,6 @@ def tokenize_text(text):
         return_tensors='pt',   # Return PyTorch tensors
     )
 
-# Tokenize the training, validation, and test datasets
 train_dataset = train_data['pr_txt'].apply(tokenize_text)
 val_dataset = val_data['pr_txt'].apply(tokenize_text)
 test_dataset = test_data['pr_txt'].apply(tokenize_text)
