@@ -1,77 +1,116 @@
-#ввод библиотек
 import pandas as pd
 import numpy as np
-import torch
-import regex
-import re
-from pymorphy2 import MorphAnalyzer
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-import matplotlib.patches as mpatches
 
 import nltk
 from nltk.corpus import stopwords
 import stop_words
 
-from bokeh.io import output_notebook
-from bokeh.plotting import figure, show
-from bokeh.models import HoverTool, CustomJS, ColumnDataSource, Slider, Range1d
-from bokeh.layouts import column
-from bokeh.palettes import all_palettes
+from sklearn.model_selection import train_test_split  
+from sklearn.preprocessing import LabelEncoder
+from transformers import DistilBertTokenizer, RobertaForSequenceClassification, AdamW, Trainer, TrainingArguments
+import torch 
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+from sklearn.metrics import classification_report
 
-from wordcloud import WordCloud
-
-import umap
 
 #ввод данных
 df = pd.read_excel('CRA_train_1200.xlsx')
 df['pr_txt'] = df['pr_txt'].astype(str).str.zfill(6)
+df = df.head(100) # для быстрого теста работы кода
 
-#перекодировка рейтинга
-rating_map = {'C': 0,
-                  'B-': 1,
-                  'B': 2,
-                  'B+': 3,
-                  'BB-': 4,
-                  'BB': 5,
-                  'BB+': 6,
-                  'BBB-':7,
-                  'BBB':8,
-                  'BBB+':9,
-                  'A-': 10,
-                  'A': 11,
-                  'A+': 12,
-                  'AA-': 13,
-                  'AA': 14,
-                  'AA+': 15,
-                  'AAA': 16}
+# перекодируем текстовые значения в числовые
+label_encoder = LabelEncoder()
+df['Категория'] = label_encoder.fit_transform(df['Категория'])
 
-df['Уровень рейтинга'] = df['Уровень рейтинга'].map(rating_map)
-df
+# разделим данные на обучающие и тестовые
+train_data, temp_data = train_test_split(df, test_size=0.2, random_state=0)
+val_data, test_data = train_test_split(temp_data, test_size=0.5, random_state=0)
 
-regexp = RegexpTokenizer('\w+')
+# загрузим токенизатор и применим его
+tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-multilingual-cased")
 
-#токенизация
-df['txt_token']=df['pr_txt'].apply(regexp.tokenize)
+# Define a function to tokenize the text data
+def tokenize_text(text):
+    return tokenizer(
+        text,
+        padding='max_length',  # Pad sequences to the same length
+        truncation=True,       # Truncate sequences if they exceed the maximum length
+        max_length=128,        # You can adjust the maximum sequence length
+        return_tensors='pt',   # Return PyTorch tensors
+    )
 
-#удаление стоп-слов и лемматизация
-stopwords_ru = stopwords.words('russian')
-patterns = "[A-Za-z0-9!#$%&'()*+,./:;<=>?@[\]^_`{|}~—\"\-]+"
-morph = MorphAnalyzer()
+# Tokenize the training, validation, and test datasets
+train_dataset = train_data['pr_txt'].apply(tokenize_text)
+val_dataset = val_data['pr_txt'].apply(tokenize_text)
+test_dataset = test_data['pr_txt'].apply(tokenize_text)
 
-def lemmatize(doc):
-    doc = re.sub(patterns, ' ', doc)
-    tokens = []
-    for token in doc.split():
-        if token and token not in stopwords_ru:
-            token = token.strip()
-            token = morph.normal_forms(token)[0]
-            
-            tokens.append(token)
-    if len(tokens) > 2:
-        return tokens
-    return None
+# задаем модель для классификатора
+from transformers import DistilBertForSequenceClassification
 
-df['txt_nostop'] = df['txt_token'].apply(lemmatize)
-df.head(10)
+class CreditRatingClassifier(nn.Module):
+    def __init__(self, num_classes):
+        super(CreditRatingClassifier, self).__init__()
+        self.bert = DistilBertForSequenceClassification.from_pretrained("distilbert-base-multilingual-cased", num_labels=num_classes)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        return outputs.logits
+
+# загружаем модель
+num_classes = len(df['Категория'].unique())
+model = CreditRatingClassifier(num_classes)
+
+# зададим датасет
+class TextClassificationDataset(Dataset):
+    def __init__(self, encodings, labels):
+        self.encodings = encodings
+        self.labels = labels
+
+    def __getitem__(self, idx):
+        item = {key: val[idx] for key, val in self.encodings.items()}
+        item['labels'] = torch.tensor(self.labels[idx])
+        return item
+
+    def __len__(self):
+        return len(self.labels)
+
+# сделаем подгрузку данных для обучения
+train_dataset = TextClassificationDataset(train_dataset, train_data['Категория'])
+val_dataset = TextClassificationDataset(val_dataset, val_data['Категория'])
+
+# зададим директорию
+training_args = TrainingArguments(
+    per_device_train_batch_size=8,
+    per_device_eval_batch_size=8,
+    output_dir='./output',
+    num_train_epochs=3,
+    evaluation_strategy="epoch",
+    logging_dir='./logs',
+)
+
+# запуск
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+)
+
+# настройка
+trainer.train()
+
+# проверим результативность модели на тестовой части
+test_results = trainer.predict(test_dataset)
+test_preds = test_results.predictions.argmax(axis=1)
+test_labels = test_data['Категория']
+
+# конвертируем номера категорий обратно в текстовые значения
+test_preds_text = label_encoder.inverse_transform(test_preds)
+test_labels_text = label_encoder.inverse_transform(test_labels)
+
+# просматриваем результат отработки модели
+classification_rep = classification_report(test_labels_text, test_preds_text)
+
+print("Classification Report:")
+print(classification_rep)
