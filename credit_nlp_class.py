@@ -114,3 +114,77 @@ print(f'F1 Score: {w_f1_score:.4f}')
 
 # сохраним модель
 torch.save(model, 'model_LSTM.pth')
+
+# та же модель, но для укрупненных категорий
+## LSTM (для укрупненных значений)
+
+df['category_encoded1'] = label_encoder.fit_transform(df['Категория'])
+
+# разделим данные на обучающие и тестовые
+X_train1, X_test1, y_train1, y_test1 = train_test_split(df['pr_txt'], df['category_encoded1'], test_size=0.2, random_state=42)
+
+# конвертируем текстовые данные в tf-idf вектора для будущей обработки моделью
+X_train_tfidf1 = tfidf_vectorizer.fit_transform(X_train1)
+X_test_tfidf1 = tfidf_vectorizer.transform(X_test1)
+
+# посмотрим матрицы
+print("X_train_tfidf shape:", X_train_tfidf1.shape)
+print("X_test_tfidf shape:", X_test_tfidf1.shape)
+
+# зададим гиперпараметры
+input_dim = X_train_tfidf1.shape[1]
+hidden_dim = 128
+output_dim = len(df['Категория'].unique())
+n_layers = 2
+dropout = 0.2
+
+model1 = LSTMClassifier(input_dim, hidden_dim, output_dim, n_layers, dropout).to(device)
+
+# просмотр архитектуры
+print(model1)
+
+# пропишем функцию потерь и оптимизатор
+criterion = nn.NLLLoss()
+optimizer = optim.Adam(model1.parameters(), lr=0.001)
+
+# конвертируем данные в PyTorch tensors
+X_train_tfidf1 = torch.FloatTensor(X_train_tfidf1.toarray()).to(device)
+y_train1 = torch.LongTensor(numpy.array(y_train1)).to(device)
+
+criterion = nn.NLLLoss()
+optimizer = optim.Adam(model1.parameters(), lr=0.001)
+
+# тренируем модель
+num_epochs = 1000
+for epoch in range(num_epochs):
+    model1.train()
+    optimizer.zero_grad()
+
+    outputs = model1(X_train_tfidf)
+
+    loss = criterion(outputs, y_train1)
+    loss.backward()
+    optimizer.step()
+
+    print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
+
+# конвертируем данные в последовательность, а затем в тензор
+y_test1 = torch.tensor(numpy.array(y_test1), dtype=torch.long).to(device)
+X_test_tfidf_dense1 = torch.FloatTensor(X_test_tfidf1.toarray()).to(device)
+
+model1.eval()
+with torch.no_grad():
+    outputs = model1(X_test_tfidf_dense1)
+    _, predicted1 = torch.max(outputs, 1)
+
+correct1 = (predicted1 == y_test1).sum().item()
+total1 = y_test1.size(0)
+accuracy1 = correct1 / total1 * 100
+print(f'Test Accuracy: {accuracy1:.2f}%')
+# оценка точности модели
+
+w_f1_score1 = f1_score(y_test1, predicted1, average='weighted')
+print(f'F1 Score: {w_f1_score1:.4f}')
+
+# сохраним модель
+torch.save(model1, 'model_LSTM1.pth')
