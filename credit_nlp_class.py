@@ -1,114 +1,116 @@
+## LSTM
+
 import pandas as pd
-import numpy as np
-
-import nltk
-from nltk.corpus import stopwords
-import stop_words
-
-from sklearn.model_selection import train_test_split  
+import numpy
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from transformers import DistilBertTokenizer, RobertaForSequenceClassification, AdamW, Trainer, TrainingArguments
-import torch 
+from sklearn.feature_extraction.text import TfidfVectorizer
+import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
-from sklearn.metrics import classification_report
+import torch.optim as optim
+from sklearn.metrics import f1_score
 
-
-#ввод данных
 df = pd.read_excel('CRA_train_1200.xlsx')
-df['pr_txt'] = df['pr_txt'].astype(str).str.zfill(6)
-df = df.head(100) # для быстрого теста работы кода
+#df = df.head(100) # для быстрого теста работы кода
+df
 
-# перекодируем текстовые значения в числовые
+df['pr_txt'] = df['pr_txt'].str.lower()
+
+# перекодируем категории
 label_encoder = LabelEncoder()
-df['Категория'] = label_encoder.fit_transform(df['Категория'])
+df['category_encoded'] = label_encoder.fit_transform(df['Категория'])
 
 # разделим данные на обучающие и тестовые
-train_data, temp_data = train_test_split(df, test_size=0.2, random_state=0)
-val_data, test_data = train_test_split(temp_data, test_size=0.5, random_state=0)
+X_train, X_test, y_train, y_test = train_test_split(df['pr_txt'], df['category_encoded'], test_size=0.2, random_state=42)
 
-# загрузим токенизатор и применим его
-tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-multilingual-cased")
+# конвертируем текстовые данные в tf-idf вектора для будущей обработки моделью
+tfidf_vectorizer = TfidfVectorizer(max_features=5000)
+X_train_tfidf = tfidf_vectorizer.fit_transform(X_train)
+X_test_tfidf = tfidf_vectorizer.transform(X_test)
 
-def tokenize_text(text):
-    return tokenizer(
-        text,
-        padding='max_length',  # Pad sequences to the same length
-        truncation=True,       # Truncate sequences if they exceed the maximum length
-        max_length=128,        # You can adjust the maximum sequence length
-        return_tensors='pt',   # Return PyTorch tensors
-    )
+# посмотрим матрицы
+print("X_train_tfidf shape:", X_train_tfidf.shape)
+print("X_test_tfidf shape:", X_test_tfidf.shape)
 
-train_dataset = train_data['pr_txt'].apply(tokenize_text)
-val_dataset = val_data['pr_txt'].apply(tokenize_text)
-test_dataset = test_data['pr_txt'].apply(tokenize_text)
+# зададим архитектуру модели
+class LSTMClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, n_layers, dropout):
+        super(LSTMClassifier, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
 
-# задаем модель для классификатора
-from transformers import DistilBertForSequenceClassification
+        self.lstm = nn.LSTM(input_dim, hidden_dim, n_layers, dropout=dropout, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.softmax = nn.LogSoftmax(dim=1)
 
-class CreditRatingClassifier(nn.Module):
-    def __init__(self, num_classes):
-        super(CreditRatingClassifier, self).__init__()
-        self.bert = DistilBertForSequenceClassification.from_pretrained("distilbert-base-multilingual-cased", num_labels=num_classes)
+    def forward(self, x):
+        # Reshape x to (batch_size, sequence_length, input_dim)
+        x = x.view(x.size(0), -1, x.size(1))
 
-    def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids, attention_mask=attention_mask)
-        return outputs.logits
+        h0 = torch.zeros(self.n_layers, x.size(0), self.hidden_dim).to(device)
+        c0 = torch.zeros(self.n_layers, x.size(0), self.hidden_dim).to(device)
 
-# загружаем модель
-num_classes = len(df['Категория'].unique())
-model = CreditRatingClassifier(num_classes)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])
+        out = self.softmax(out)
+        return out
 
-# зададим датасет
-class TextClassificationDataset(Dataset):
-    def __init__(self, encodings, labels):
-        self.encodings = encodings
-        self.labels = labels
+# зададим гиперпараметры
+input_dim = X_train_tfidf.shape[1]
+hidden_dim = 128
+output_dim = len(df['Категория'].unique())
+n_layers = 2
+dropout = 0.2
 
-    def __getitem__(self, idx):
-        item = {key: val[idx] for key, val in self.encodings.items()}
-        item['labels'] = torch.tensor(self.labels[idx])
-        return item
+# зададим нагрузку на устройство
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = LSTMClassifier(input_dim, hidden_dim, output_dim, n_layers, dropout).to(device)
 
-    def __len__(self):
-        return len(self.labels)
+# просмотр архитектуры
+print(model)
 
-# сделаем подгрузку данных для обучения
-train_dataset = TextClassificationDataset(train_dataset, train_data['Категория'])
-val_dataset = TextClassificationDataset(val_dataset, val_data['Категория'])
+# пропишем функцию потерь и оптимизатор
+criterion = nn.NLLLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# зададим директорию
-training_args = TrainingArguments(
-    per_device_train_batch_size=8,
-    per_device_eval_batch_size=8,
-    output_dir='./output',
-    num_train_epochs=3,
-    evaluation_strategy="epoch",
-    logging_dir='./logs',
-)
+# конвертируем данные в PyTorch tensors
+X_train_tfidf = torch.FloatTensor(X_train_tfidf.toarray()).to(device)
+y_train = torch.LongTensor(numpy.array(y_train)).to(device)
 
-# запуск
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=val_dataset,
-)
+criterion = nn.NLLLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# настройка
-trainer.train()
+# тренируем модель
+num_epochs = 100
+for epoch in range(num_epochs):
+    model.train()
+    optimizer.zero_grad()
 
-# проверим результативность модели на тестовой части
-test_results = trainer.predict(test_dataset)
-test_preds = test_results.predictions.argmax(axis=1)
-test_labels = test_data['Категория']
+    outputs = model(X_train_tfidf)
 
-# конвертируем номера категорий обратно в текстовые значения
-test_preds_text = label_encoder.inverse_transform(test_preds)
-test_labels_text = label_encoder.inverse_transform(test_labels)
+    loss = criterion(outputs, y_train)
+    loss.backward()
+    optimizer.step()
 
-# просматриваем результат отработки модели
-classification_rep = classification_report(test_labels_text, test_preds_text)
+    print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
 
-print("Classification Report:")
-print(classification_rep)
+# конвертируем данные в последовательность, а затем в тензор
+y_test = torch.tensor(numpy.array(y_test), dtype=torch.long).to(device)
+X_test_tfidf_dense = torch.FloatTensor(X_test_tfidf.toarray()).to(device)
+
+model.eval()
+with torch.no_grad():
+    outputs = model(X_test_tfidf_dense)
+    _, predicted = torch.max(outputs, 1)
+
+correct = (predicted == y_test).sum().item()
+total = y_test.size(0)
+accuracy = correct / total * 100
+print(f'Test Accuracy: {accuracy:.2f}%')
+# оценка точности модели
+
+w_f1_score = f1_score(y_test, predicted, average='weighted')
+print(f'F1 Score: {w_f1_score:.4f}')
+
+# сохраним модель
+torch.save(model, 'model_LSTM.pth')
