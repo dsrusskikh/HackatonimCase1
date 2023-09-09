@@ -18,7 +18,7 @@ df['pr_txt'] = df['pr_txt'].str.lower()
 
 # перекодируем категории
 label_encoder = LabelEncoder()
-df['category_encoded'] = label_encoder.fit_transform(df['Категория'])
+df['category_encoded'] = label_encoder.fit_transform(df['Уровень рейтинга'])
 
 # разделим данные на обучающие и тестовые
 X_train, X_test, y_train, y_test = train_test_split(df['pr_txt'], df['category_encoded'], test_size=0.2, random_state=42)
@@ -58,7 +58,7 @@ class LSTMClassifier(nn.Module):
 # зададим гиперпараметры
 input_dim = X_train_tfidf.shape[1]
 hidden_dim = 128
-output_dim = len(df['Категория'].unique())
+output_dim = len(df['Уровень рейтинга'].unique())
 n_layers = 2
 dropout = 0.2
 
