@@ -81,7 +81,7 @@ criterion = nn.NLLLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # тренируем модель
-num_epochs = 100
+num_epochs = 1000
 for epoch in range(num_epochs):
     model.train()
     optimizer.zero_grad()
